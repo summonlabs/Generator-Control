@@ -1,0 +1,29 @@
+# Build artifacts
+build*/
+install/
+_dl*/
+out/
+*.exe
+*.obj
+*.lib
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.bin
+*.tmp
+*.log
+
+# Local scratch
+_*.bat
+_*.txt
+*.user
+.vs/
+.vscode/
+.idea/
+CMakeUserPresets.json
+
+# Test / benchmark residue
+/scratch/
+/tmp/

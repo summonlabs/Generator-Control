@@ -1,0 +1,20 @@
+Generator Control
+
+Copyright 2026 Summon Software Labs
+
+Generator Control is an open-source, vendor-neutral runtime for standby
+generator control and lifecycle governance: generator identity and generations,
+readiness and safety interlocks, fuel and resource evidence, synchronization and
+transfer eligibility, start/stop/test authority, command/acknowledgement/effect
+separation, fencing, durable persistence and audit.
+
+This product is licensed under the Apache License, Version 2.0. See the
+LICENSE file in this distribution for the full license text.
+
+Generator Control does not collect or transmit any telemetry. All state,
+journals and audit records are written to local files chosen by the operator and
+never leave the machine running the software.
+
+Generator Control accepts contributions from individuals and organizations on the
+terms of the Apache License 2.0 without requiring a Contributor License
+Agreement (CLA). See CONTRIBUTING.md for contribution guidance.
