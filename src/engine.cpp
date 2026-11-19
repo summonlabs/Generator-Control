@@ -326,8 +326,24 @@ Status GeneratorControlEngine::commit_locked(EpochMillis now) {
                        "store is open read-only");
   }
   StateImage image = build_image_locked(now);
-  GENCTL_TRY_ASSIGN(seq, store_->publish(std::move(image), now));
-  (void)seq;
+  const Result<CommitSeq> published = store_->publish(std::move(image), now);
+  if (!published.ok()) {
+    // Nothing was committed, so the edit that was about to be committed must not
+    // stay in the working state: the caller is told the mutation failed, and a
+    // working state that kept the edit would refuse it as a duplicate and carry
+    // it into the next commit that succeeds. The store still holds the image it
+    // last committed, and the working state goes back to it.
+    const StateImage& committed = store_->image();
+    generators_ = committed.generators;
+    journal_.restore(committed.next_attempt_id, committed.next_journal_seq, committed.retained_floor,
+                     committed.evicted_keys, committed.attempts, committed.replay);
+    key_window_.acknowledged_at_seq = committed.key_window.acknowledged_at_seq;
+    key_window_.acknowledged_at = committed.key_window.acknowledged_at;
+    key_window_.acknowledged_by = committed.key_window.acknowledged_by;
+    key_window_.reason = committed.key_window.reason;
+    key_window_.evicted_keys = committed.key_window.evicted_keys;
+    return published.status();
+  }
   rebuild_view_locked();
   return Status::success();
 }

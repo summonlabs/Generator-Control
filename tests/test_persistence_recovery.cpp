@@ -1,8 +1,11 @@
 // Proof obligations: durable round trip, canonical determinism, retention, rollback
 // fencing, crash before/after the command-attempt commit, and recovery without
 // duplicate external actuation.
+#include <chrono>
+#include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "genctl/persistence.hpp"
@@ -470,6 +473,94 @@ TEST(process_death_at_every_durable_stage_leaves_one_whole_state) {
     CHECK(engine->close().ok());
     engine.reset();
   }
+}
+
+TEST(a_commit_waits_for_a_reader_of_the_head_marker) {
+  LabConfig config{};
+  config.label = "head-reader";
+  Lab lab(config);
+  const Result<GeneratorId> id = GeneratorId::parse("gen-unit-1");
+  CHECK(id.ok());
+  const Result<GeneratorId> second_id = GeneratorId::parse("gen-unit-2");
+  CHECK(second_id.ok());
+
+  ManualClock clock;
+  SyntheticAdapter adapter(id.value(), clock, SyntheticAdapter::Options{});
+  std::unique_ptr<GeneratorControlEngine> engine = open_lab(lab, adapter);
+  register_generator(*engine, id.value(), 1'000);
+  const std::uint64_t before = engine->commit_seq().value();
+
+  bool reader_opened = false;
+  bool committed = false;
+  {
+    // Another tool reading the store (an inspection, a backup, a scan) holds the
+    // head marker open while the next commit replaces it, and closes it shortly
+    // after.
+    std::ifstream reader(lab.store() + "\\genctl.head", std::ios::binary);
+    reader_opened = reader.is_open();
+    std::thread writer([&engine, &second_id, &committed] {
+      committed = engine->register_generator(second_id.value(), RegisterOptions{}, 2'000).ok();
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    reader.close();
+    writer.join();
+  }
+  CHECK(reader_opened);
+  // The replacement waits for the reader instead of failing the commit after
+  // its generation has been published.
+  CHECK(committed);
+  CHECK(engine->commit_seq().value() > before);
+  CHECK(engine->close().ok());
+
+  std::unique_ptr<GeneratorControlEngine> reopened = open_lab(lab, adapter);
+  CHECK(reopened->inspect(second_id.value()).ok());
+  CHECK(reopened->close().ok());
+}
+
+TEST(a_commit_that_fails_leaves_no_trace_in_the_engine) {
+  LabConfig config{};
+  config.label = "failed-commit";
+  Lab lab(config);
+  const Result<GeneratorId> id = GeneratorId::parse("gen-unit-1");
+  CHECK(id.ok());
+  const Result<GeneratorId> refused_id = GeneratorId::parse("gen-unit-2");
+  CHECK(refused_id.ok());
+  const Result<GeneratorId> later_id = GeneratorId::parse("gen-unit-3");
+  CHECK(later_id.ok());
+
+  ManualClock clock;
+  SyntheticAdapter adapter(id.value(), clock, SyntheticAdapter::Options{});
+  std::unique_ptr<GeneratorControlEngine> engine = open_lab(lab, adapter);
+  register_generator(*engine, id.value(), 1'000);
+
+  bool reader_opened = false;
+  bool refused = false;
+  {
+    // A reader that keeps the head marker open for longer than the replacement
+    // waits makes the commit fail; the caller is told so.
+    std::ifstream reader(lab.store() + "\\genctl.head", std::ios::binary);
+    reader_opened = reader.is_open();
+    refused = !engine->register_generator(refused_id.value(), RegisterOptions{}, 2'000).ok();
+  }
+  CHECK(reader_opened);
+  CHECK(refused);
+  CHECK(!engine->inspect(refused_id.value()).ok());
+
+  // A later commit succeeds. The refused registration must not ride along with
+  // it: it used to stay in the working state and become durable here.
+  CHECK(engine->register_generator(later_id.value(), RegisterOptions{}, 3'000).ok());
+  CHECK(engine->inspect(later_id.value()).ok());
+  CHECK(!engine->inspect(refused_id.value()).ok());
+  // And the refused identity is free: registering it again is a new attempt,
+  // not a duplicate of one that never committed.
+  CHECK(engine->register_generator(refused_id.value(), RegisterOptions{}, 4'000).ok());
+  CHECK(engine->close().ok());
+
+  std::unique_ptr<GeneratorControlEngine> reopened = open_lab(lab, adapter);
+  CHECK(reopened->inspect(id.value()).ok());
+  CHECK(reopened->inspect(refused_id.value()).ok());
+  CHECK(reopened->inspect(later_id.value()).ok());
+  CHECK(reopened->close().ok());
 }
 
 }  // namespace

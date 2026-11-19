@@ -325,11 +325,30 @@ Result<ByteBuffer> read_file_bounded(const std::string& path_utf8, std::size_t m
 Status atomic_replace(const std::string& source_utf8, const std::string& target_utf8) {
   GENCTL_TRY_ASSIGN(source, to_wide(source_utf8));
   GENCTL_TRY_ASSIGN(target, to_wide(target_utf8));
-  if (::MoveFileExW(source.c_str(), target.c_str(),
-                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0) {
-    return last_error_status(ErrorCode::StorePublicationFailed, "atomically replacing");
+  // While a reader has the target open (an inspection, a backup, an antivirus or
+  // indexing scan) the replace fails until the reader closes it, so it is
+  // retried for a bounded time (about 2 s). A directory or a read-only file in
+  // the way is not transient and fails at once.
+  for (int attempt = 0;; ++attempt) {
+    if (::MoveFileExW(source.c_str(), target.c_str(),
+                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+      return Status::success();
+    }
+    const DWORD error = ::GetLastError();
+    const DWORD attributes = ::GetFileAttributesW(target.c_str());
+    const bool blocked =
+        attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_READONLY)) != 0;
+    const bool transient = (error == ERROR_ACCESS_DENIED || error == ERROR_SHARING_VIOLATION ||
+                            error == ERROR_LOCK_VIOLATION) &&
+                           !blocked;
+    if (!transient || attempt >= 100) {
+      // The status text is built from the last error.
+      ::SetLastError(error);
+      return last_error_status(ErrorCode::StorePublicationFailed, "atomically replacing");
+    }
+    ::Sleep(20);
   }
-  return Status::success();
 }
 
 Status flush_directory(const std::string& path_utf8) {
